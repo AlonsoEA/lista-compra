@@ -1,4 +1,5 @@
-// Datos compartidos del hogar (Firebase: acceso anónimo + Firestore).
+// Datos compartidos de cada lista (Firebase: acceso anónimo + Firestore).
+// Un mismo dispositivo puede estar en varias listas (casa, amigos…); cada una es un «household».
 // Estructura en Firestore:
 //   codes/{CODIGO}                 -> { hid }                       (para unirse con el código)
 //   households/{hid}               -> { name, code, members: { uid: nombre }, stores, createdAt }
@@ -11,7 +12,7 @@ import { FIREBASE_CONFIG } from './firebase-config.js';
 
 export const cloudEnabled = !!(FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey);
 
-const SESSION_KEY = 'compra.session'; // { hid, name }
+const SESSION_KEY = 'compra.session'; // { name, current, lists: [{ hid, name }] }
 const LOCAL_KEY = 'compra.local';
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin 0/O ni 1/I para no confundirse
 
@@ -30,12 +31,51 @@ function randomCode() {
   return [...a].map((n) => CODE_CHARS[n % CODE_CHARS.length]).join('');
 }
 
-export function session() {
-  try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || null; } catch { return null; }
+/* ---------- Listas guardadas en este dispositivo ---------- */
+
+function loadSession() {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { /* vacío */ }
+  if (!s) return { name: '', current: null, lists: [] };
+  // Formato anterior, cuando solo podía haber una lista.
+  if (s.hid && !s.lists) s = { name: s.name || '', current: s.hid, lists: [{ hid: s.hid, name: 'Casa' }] };
+  s.lists = Array.isArray(s.lists) ? s.lists : [];
+  if (!s.lists.some((l) => l.hid === s.current)) s.current = s.lists.length ? s.lists[0].hid : null;
+  return s;
 }
-function setSession(s) {
-  if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-  else localStorage.removeItem(SESSION_KEY);
+function saveSession(s) { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); }
+
+// La lista que se está viendo: { hid, name (el del usuario) }, o null si no hay ninguna.
+export function session() {
+  const s = loadSession();
+  return s.current ? { hid: s.current, name: s.name } : null;
+}
+export const userName = () => loadSession().name;
+export const lists = () => loadSession().lists;
+
+function addList(hid, listName, name) {
+  const s = loadSession();
+  s.name = name;
+  if (!s.lists.some((l) => l.hid === hid)) s.lists.push({ hid, name: listName });
+  s.current = hid;
+  saveSession(s);
+}
+function dropList(hid) {
+  const s = loadSession();
+  s.lists = s.lists.filter((l) => l.hid !== hid);
+  if (s.current === hid) s.current = s.lists.length ? s.lists[0].hid : null;
+  saveSession(s);
+}
+export function switchTo(hid) {
+  stop();
+  const s = loadSession();
+  if (s.lists.some((l) => l.hid === hid)) { s.current = hid; saveSession(s); }
+}
+// Guarda el nombre de la lista actual para poder mostrarlo en «Mis listas».
+export function noteListName(listName) {
+  const s = loadSession();
+  const l = s.lists.find((x) => x.hid === s.current);
+  if (l && listName && l.name !== listName) { l.name = listName; saveSession(s); }
 }
 
 /* ---------- Arranque ---------- */
@@ -70,10 +110,21 @@ async function ensureUser() {
 
 /* ---------- Modo local ---------- */
 
-function localLoad() {
-  try { return JSON.parse(localStorage.getItem(LOCAL_KEY)) || null; } catch { return null; }
+function localAll() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(LOCAL_KEY)); } catch { /* vacío */ }
+  if (!d) return {};
+  return d.home ? { local: d } : d; // formato anterior: una sola lista
 }
-function localSave(d) { localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); }
+function localLoad() {
+  const s = session();
+  return s ? localAll()[s.hid] || null : null;
+}
+function localSave(d) {
+  const all = localAll();
+  all[session().hid] = d;
+  localStorage.setItem(LOCAL_KEY, JSON.stringify(all));
+}
 function localEmit() {
   const d = localLoad();
   if (!handlers) return;
@@ -85,12 +136,15 @@ function localEmit() {
 
 /* ---------- Crear / unirse / salir ---------- */
 
-export async function createHousehold(name, stores) {
+export async function createHousehold(name, listName, stores) {
   await ensureUser();
-  const home = { name: 'Casa', code: randomCode(), members: { [uid]: name }, stores, createdAt: Date.now() };
+  const home = { name: listName, code: randomCode(), members: { [uid]: name }, stores, createdAt: Date.now() };
   if (!cloudEnabled) {
-    localSave({ home, items: {}, trips: {} });
-    setSession({ hid: 'local', name });
+    const hid = newId();
+    const all = localAll();
+    all[hid] = { home, items: {}, trips: {} };
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(all));
+    addList(hid, listName, name);
     return;
   }
   const ref = fb.doc(fb.collection(db, 'households'));
@@ -107,24 +161,27 @@ export async function createHousehold(name, stores) {
       home.code = randomCode();
     }
   }
-  setSession({ hid: ref.id, name });
+  addList(ref.id, listName, name);
 }
 
 // Lanza un error con code 'no-code' si el código no existe.
 export async function joinHousehold(code, name) {
   code = cleanCode(code);
   if (!cloudEnabled) {
-    const d = localLoad();
-    if (!d || d.home.code !== code) throw Object.assign(new Error('no-code'), { code: 'no-code' });
-    setSession({ hid: 'local', name });
+    const found = Object.entries(localAll()).find(([, d]) => d.home.code === code);
+    if (!found) throw Object.assign(new Error('no-code'), { code: 'no-code' });
+    addList(found[0], found[1].home.name, name);
     return;
   }
   await ensureUser();
   const snap = await fb.getDocFromServer(fb.doc(db, 'codes', code));
   if (!snap.exists()) throw Object.assign(new Error('no-code'), { code: 'no-code' });
   const hid = snap.data().hid;
-  await fb.updateDoc(fb.doc(db, 'households', hid), { [`members.${uid}`]: name });
-  setSession({ hid, name });
+  const ref = fb.doc(db, 'households', hid);
+  await fb.updateDoc(ref, { [`members.${uid}`]: name });
+  let listName = '';
+  try { listName = (await fb.getDoc(ref)).data().name || ''; } catch { /* llegará al escuchar */ }
+  addList(hid, listName, name);
 }
 
 export async function leaveHousehold() {
@@ -134,15 +191,20 @@ export async function leaveHousehold() {
     try { await fb.updateDoc(fb.doc(db, 'households', s.hid), { [`members.${uid}`]: fb.deleteField() }); }
     catch (e) { console.error(e); }
   }
-  setSession(null);
+  if (s) dropList(s.hid);
 }
 
-export function forget() { stop(); setSession(null); }
+export function forget() { const s = session(); stop(); if (s) dropList(s.hid); }
 
+// Cambia el nombre del usuario en todas sus listas.
 export function rename(name) {
-  const s = session();
-  setSession({ ...s, name });
-  return patchHome({ [`members.${uid}`]: name });
+  const s = loadSession();
+  s.name = name;
+  saveSession(s);
+  if (!cloudEnabled) { patchHome({ [`members.${uid}`]: name }); return; }
+  for (const l of s.lists) {
+    fb.updateDoc(fb.doc(db, 'households', l.hid), { [`members.${uid}`]: name }).catch((e) => console.error('sync', e));
+  }
 }
 
 // Cambia el código de invitación: el antiguo deja de servir.

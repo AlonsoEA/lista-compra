@@ -2,7 +2,8 @@ import * as store from './store.js';
 
 /* =========================================================
    Lista de la compra compartida
-   - Lista: lo que hace falta, lo apunta cualquiera de la familia.
+   - Lista: lo que hace falta, lo apunta cualquiera de los que comparten la lista.
+   - Se puede estar en varias listas (casa, amigos…) y cambiar de una a otra.
    - Compra: se elige el súper, se van metiendo productos con su precio y la app suma.
    - Calendario: los días de compra y el ticket de cada una.
    ========================================================= */
@@ -27,7 +28,7 @@ let trips = [];       // compras (en curso y terminadas)
 let tab = 'list';
 let sub = null;       // { ticket: id } cuando se está viendo un ticket
 let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-let welcome = { busy: false, error: '' };
+let welcome = { mode: null, busy: false, error: '' };
 let index = null;     // precios y nombres conocidos, calculado a partir de las compras
 
 /* ---------------- Números y fechas ---------------- */
@@ -208,7 +209,7 @@ function render() {
   const tabbar = $('#tabbar');
   const totalbar = $('#totalbar');
   if (!s) { tabbar.hidden = true; totalbar.hidden = true; renderWelcome(); return; }
-  if (!home) { tabbar.hidden = true; totalbar.hidden = true; mount('loading', '<p class="center muted loading">Cargando la lista…</p>'); return; }
+  if (!home) { tabbar.hidden = true; totalbar.hidden = true; mount('loading', `<p class="center muted loading">Cargando la lista…</p>${store.lists().length > 1 ? '<p class="center"><button class="link" data-act="lists">Cambiar de lista</button></p>' : ''}`); return; }
 
   tabbar.hidden = false;
   tabbar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
@@ -234,55 +235,112 @@ function render() {
 
 /* ----- Bienvenida ----- */
 
+function connectError(e) {
+  return e.code === 'no-code' ? 'Ese código no existe. Revísalo y vuelve a probar.'
+    : e.code === 'auth/operation-not-allowed' || e.code === 'auth/admin-restricted-operation' ? 'Falta activar el acceso anónimo en Firebase.'
+    : e.code === 'permission-denied' ? 'Firebase ha rechazado la operación. Revisa las reglas de Firestore.'
+    : 'No se ha podido conectar. Comprueba tu conexión a internet.';
+}
+
+// Entra en la lista actual (al crearla, al unirse o al cambiar de una a otra).
+function enterCurrent() {
+  home = null; items = []; trips = []; index = null; sub = null; tab = 'list';
+  if (store.session()) startListening();
+  render();
+  window.scrollTo(0, 0);
+}
+
 function renderWelcome() {
   const prev = $('#welcome-form');
-  const name = prev ? prev.elements.name.value : '';
-  const code = prev ? prev.elements.code.value : '';
+  const val = (n) => (prev && prev.elements[n] ? prev.elements[n].value : '');
+  const name = prev ? val('name') : store.userName();
+  const m = welcome.mode;
+  const dis = welcome.busy ? 'disabled' : '';
   mount('welcome', `
     <div class="welcome">
       <img src="icons/icon-192.png" alt="" class="logo">
       <h1>Lista de la compra</h1>
-      <p class="muted">Una lista para toda la familia: cada uno apunta lo que hace falta desde su móvil.</p>
+      <p class="muted">Listas compartidas: cada uno apunta lo que hace falta desde su móvil.</p>
       <form id="welcome-form" data-form="welcome" autocomplete="off">
         <label class="field"><span>Tu nombre</span>
-          <input name="name" class="input" maxlength="20" placeholder="Por ejemplo, Mamá" value="${esc(name)}" required>
+          <input name="name" class="input" maxlength="20" placeholder="Por ejemplo, Mamá" value="${esc(name)}">
         </label>
-        <button class="btn" name="mode" value="create" ${welcome.busy ? 'disabled' : ''}>Crear una lista nueva</button>
-        <div class="or"><span>o, si en casa ya hay una</span></div>
-        <label class="field"><span>Código de la familia</span>
-          <input name="code" class="input code-input" maxlength="8" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="ABC123" value="${esc(code)}">
-        </label>
-        <button class="btn secondary" name="mode" value="join" ${welcome.busy ? 'disabled' : ''}>Unirme con el código</button>
+        ${!m ? `
+          <button type="button" class="btn" data-act="welcome-mode" data-mode="create">Crear una lista nueva</button>
+          <button type="button" class="btn secondary" data-act="welcome-mode" data-mode="join">Unirme a una lista con un código</button>` : ''}
+        ${m === 'create' ? `
+          <label class="field"><span>Nombre de la lista</span>
+            <input name="list" class="input" maxlength="24" placeholder="Por ejemplo, Casa" value="${esc(val('list'))}">
+          </label>
+          <button class="btn" ${dis}>Crear la lista</button>` : ''}
+        ${m === 'join' ? `
+          <label class="field"><span>Código de la lista</span>
+            <input name="code" class="input code-input" maxlength="8" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="ABC123" value="${esc(val('code'))}">
+          </label>
+          <button class="btn" ${dis}>Unirme a la lista</button>` : ''}
+        ${m ? `<button type="button" class="btn ghost" data-act="welcome-mode" data-mode="" ${dis}>‹ Atrás</button>` : ''}
         ${welcome.busy ? '<p class="center muted">Conectando…</p>' : ''}
         ${welcome.error ? `<p class="error">${esc(welcome.error)}</p>` : ''}
       </form>
     </div>`);
 }
 
-async function submitWelcome(form, submitter) {
-  if (welcome.busy) return;
+async function submitWelcome(form) {
+  if (welcome.busy || !welcome.mode) return;
+  const fail = (msg) => { welcome.error = msg; render(); };
   const name = form.elements.name.value.trim();
-  const code = store.cleanCode(form.elements.code.value);
-  const mode = submitter && submitter.value ? submitter.value : (code ? 'join' : 'create');
-  if (!name) { welcome.error = 'Escribe tu nombre.'; render(); return; }
-  if (mode === 'join' && code.length < 6) { welcome.error = 'Escribe el código de 6 letras y números.'; render(); return; }
-  welcome = { busy: true, error: '' };
+  if (!name) return fail('Escribe tu nombre.');
+  const mode = welcome.mode;
+  const listName = mode === 'create' ? cap(form.elements.list.value.trim()) : '';
+  const code = mode === 'join' ? store.cleanCode(form.elements.code.value) : '';
+  if (mode === 'create' && !listName) return fail('Escribe un nombre para la lista.');
+  if (mode === 'join' && code.length < 6) return fail('Escribe el código de 6 letras y números.');
+  welcome = { mode, busy: true, error: '' };
   render();
   try {
     if (mode === 'join') await store.joinHousehold(code, name);
-    else await store.createHousehold(name, DEFAULT_STORES);
-    welcome = { busy: false, error: '' };
-    tab = 'list';
-    startListening();
+    else await store.createHousehold(name, listName, DEFAULT_STORES);
+    welcome = { mode: null, busy: false, error: '' };
+    enterCurrent();
   } catch (e) {
     console.error(e);
-    const msg = e.code === 'no-code' ? 'Ese código no existe. Revísalo y vuelve a probar.'
-      : e.code === 'auth/operation-not-allowed' || e.code === 'auth/admin-restricted-operation' ? 'Falta activar el acceso anónimo en Firebase.'
-      : e.code === 'permission-denied' ? 'Firebase ha rechazado la operación. Revisa las reglas de Firestore.'
-      : 'No se ha podido conectar. Comprueba tu conexión a internet.';
-    welcome = { busy: false, error: msg };
+    welcome = { mode, busy: false, error: connectError(e) };
+    render();
   }
-  render();
+}
+
+/* ----- Varias listas ----- */
+
+function openListsSheet() {
+  const cur = store.session() ? store.session().hid : null;
+  openSheet(`
+    <h2>Mis listas</h2>
+    <div class="rows">${store.lists().map((l) => `
+      <button class="row" data-act="switch-list" data-id="${esc(l.hid)}">
+        <span class="circle ${l.hid === cur ? 'on' : ''}">${l.hid === cur ? '✓' : ''}</span>
+        <span class="grow"><b>${esc(l.name || 'Lista')}</b>${l.hid === cur ? '<small class="muted">La que estás viendo</small>' : ''}</span>
+      </button>`).join('')}</div>
+    <button class="btn secondary" data-act="new-list-ask">+ Crear otra lista</button>
+    <button class="btn secondary" data-act="join-list-ask">Unirme a otra lista con un código</button>`);
+}
+
+// Crea o se une a otra lista desde una ventana, mostrando el error en la propia ventana si falla.
+async function connectFromSheet(form, fn) {
+  const btn = form.querySelector('.btn');
+  const err = form.querySelector('.error');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  err.hidden = true;
+  try {
+    await fn();
+    closeSheet();
+    enterCurrent();
+  } catch (e) {
+    console.error(e);
+    err.textContent = e.message && !e.code ? e.message : connectError(e);
+    err.hidden = false;
+    btn.disabled = false;
+  }
 }
 
 /* ----- Lista ----- */
@@ -292,8 +350,9 @@ function renderList() {
   if ($('#view').dataset.screen !== 'list' || !$('#list-body')) {
     mount('list', `
       <div class="header">
-        <div class="eyebrow" id="list-home"></div>
-        <h1>Lista de la compra</h1>
+        <div class="eyebrow">Lista de la compra</div>
+        <button class="switcher" data-act="lists" aria-label="Cambiar de lista"><h1 id="list-name"></h1><span class="chev-down">▾</span></button>
+        <div class="muted small" id="list-people"></div>
       </div>
       <form class="addbar" data-form="add-item" autocomplete="off">
         <input name="name" id="add-name" class="input" maxlength="60" placeholder="Añadir producto…" enterkeyhint="done">
@@ -302,7 +361,9 @@ function renderList() {
       <div class="chips" id="add-suggest"></div>
       <div id="list-body"></div>`);
   }
-  $('#list-home').textContent = `${home.name || 'Casa'} · ${Object.keys(home.members || {}).length} en la familia`;
+  $('#list-name').textContent = home.name || 'Lista';
+  const people = Object.keys(home.members || {}).length;
+  $('#list-people').textContent = people === 1 ? 'De momento solo estás tú' : `${people} personas`;
 
   const others = trips.filter((t) => !t.finishedAt && t.uid !== store.myUid());
   const mine = myTrip();
@@ -601,14 +662,23 @@ function renderSettings() {
 
     ${store.cloudEnabled ? '' : '<div class="banner warn"><span><b>Modo local.</b> Falta configurar Firebase: de momento la lista solo se guarda en este dispositivo y no se comparte.</span></div>'}
 
-    <h2 class="sub">Código de la familia</h2>
+    <h2 class="sub">Lista actual</h2>
+    <div class="rows">
+      <button class="row" data-act="lists">
+        <span class="grow"><b>${esc(home.name || 'Lista')}</b><small class="muted">Toca para cambiar de lista, crear otra o unirte a otra</small></span>
+        <span class="chev">›</span>
+      </button>
+    </div>
+    <button class="btn secondary" data-act="rename-list-ask">Cambiar el nombre de la lista</button>
+
+    <h2 class="sub">Código de esta lista</h2>
     <div class="card center">
       <div class="code">${esc(home.code || '')}</div>
-      <p class="muted small">Quien quiera unirse escribe este código al abrir la app. Compártelo solo con los de casa.</p>
+      <p class="muted small">Quien quiera unirse a esta lista escribe este código en la app. Compártelo solo con quien quieras que entre.</p>
       <button class="btn" data-act="share-code">Compartir código</button>
     </div>
 
-    <h2 class="sub">En la familia</h2>
+    <h2 class="sub">En esta lista</h2>
     <div class="chips">${members.map(([id, n]) => `<span class="chip small static${id === store.myUid() ? ' on' : ''}">${esc(n)}${id === store.myUid() ? ' (tú)' : ''}</span>`).join('')}</div>
     <button class="btn secondary" data-act="rename-ask">Cambiar mi nombre (${esc(s.name)})</button>
 
@@ -625,7 +695,7 @@ function renderSettings() {
 }
 
 async function shareCode() {
-  const text = `Únete a nuestra lista de la compra.\nCódigo: ${home.code}\n${location.origin}${location.pathname}`;
+  const text = `Únete a la lista de la compra «${home.name}».\nCódigo: ${home.code}\n${location.origin}${location.pathname}`;
   try {
     if (navigator.share) { await navigator.share({ text }); return; }
     await navigator.clipboard.writeText(text);
@@ -650,6 +720,47 @@ document.addEventListener('click', (e) => {
   const d = el.dataset;
   switch (d.act) {
     case 'close-sheet': closeSheet(); break;
+
+    /* Bienvenida y varias listas */
+    case 'welcome-mode': {
+      welcome = { mode: d.mode || null, busy: false, error: '' };
+      render();
+      const form = $('#welcome-form');
+      const next = !form.elements.name.value.trim() ? form.elements.name : (form.elements.list || form.elements.code);
+      if (next && welcome.mode) next.focus();
+      break;
+    }
+    case 'lists': openListsSheet(); break;
+    case 'switch-list':
+      closeSheet();
+      if (!store.session() || d.id !== store.session().hid) { store.switchTo(d.id); enterCurrent(); }
+      break;
+    case 'new-list-ask':
+      openSheet(`
+        <form data-form="new-list" autocomplete="off">
+          <h2>Crear otra lista</h2>
+          <label class="field"><span>Nombre de la lista</span><input name="name" class="input" maxlength="24" placeholder="Por ejemplo, Amigos" required></label>
+          <p class="error" hidden></p>
+          <button class="btn">Crear la lista</button>
+        </form>`, '[name=name]');
+      break;
+    case 'join-list-ask':
+      openSheet(`
+        <form data-form="join-list" autocomplete="off">
+          <h2>Unirme a otra lista</h2>
+          <label class="field"><span>Código de la lista</span><input name="code" class="input code-input" maxlength="8" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="ABC123" required></label>
+          <p class="error" hidden></p>
+          <button class="btn">Unirme a la lista</button>
+        </form>`, '[name=code]');
+      break;
+    case 'rename-list-ask':
+      openSheet(`
+        <form data-form="rename-list" autocomplete="off">
+          <h2>Nombre de la lista</h2>
+          <label class="field"><span>Lo verán todos los que están en ella</span><input name="name" class="input" maxlength="24" value="${esc(home.name || '')}" required></label>
+          <button class="btn">Guardar</button>
+        </form>`, '[name=name]');
+      break;
 
     case 'step': {
       const input = el.closest('.stepper').querySelector('input');
@@ -722,7 +833,7 @@ document.addEventListener('click', (e) => {
     case 'open-ticket': closeSheet(); sub = { ticket: d.id }; render(); window.scrollTo(0, 0); break;
     case 'back-cal': sub = null; render(); break;
     case 'del-ticket-ask':
-      confirmSheet({ title: '¿Borrar este ticket?', text: 'Se borrará para toda la familia y no se puede recuperar.', label: 'Borrar ticket', act: 'del-ticket', danger: true, attrs: `data-id="${esc(d.id)}"` });
+      confirmSheet({ title: '¿Borrar este ticket?', text: 'Se borrará para todos los de la lista y no se puede recuperar.', label: 'Borrar ticket', act: 'del-ticket', danger: true, attrs: `data-id="${esc(d.id)}"` });
       break;
     case 'del-ticket': store.commit([{ del: ['trips', d.id] }]); sub = null; closeSheet(); toast('Ticket borrado'); render(); break;
 
@@ -751,18 +862,18 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'change-code-ask':
-      confirmSheet({ title: '¿Cambiar el código?', text: 'El código actual dejará de servir para unirse. Los que ya están en la familia siguen dentro.', label: 'Cambiar el código', act: 'change-code' });
+      confirmSheet({ title: '¿Cambiar el código?', text: 'El código actual dejará de servir para unirse. Los que ya están en la lista siguen dentro.', label: 'Cambiar el código', act: 'change-code' });
       break;
     case 'change-code':
       closeSheet();
       store.changeCode(home.code).then(() => toast('Código cambiado')).catch(() => toast('No se ha podido cambiar. Comprueba la conexión.'));
       break;
     case 'leave-ask':
-      confirmSheet({ title: '¿Salir de esta lista?', text: 'Dejarás de ver la lista en este móvil. Podrás volver a entrar con el código.', label: 'Salir', act: 'leave', danger: true });
+      confirmSheet({ title: '¿Salir de esta lista?', text: `Dejarás de ver «${home.name}» en este móvil. Podrás volver a entrar con el código.`, label: 'Salir', act: 'leave', danger: true });
       break;
     case 'leave':
       closeSheet();
-      store.leaveHousehold().then(() => { home = null; items = []; trips = []; index = null; tab = 'list'; sub = null; render(); });
+      store.leaveHousehold().then(() => { toast('Has salido de la lista'); enterCurrent(); });
       break;
   }
 });
@@ -792,7 +903,27 @@ document.addEventListener('submit', (e) => {
   e.preventDefault();
   const f = form.elements;
   switch (form.dataset.form) {
-    case 'welcome': submitWelcome(form, e.submitter); break;
+    case 'welcome': submitWelcome(form); break;
+
+    case 'new-list': {
+      const listName = cap(f.name.value.trim());
+      if (listName) connectFromSheet(form, () => store.createHousehold(store.userName(), listName, DEFAULT_STORES));
+      break;
+    }
+    case 'join-list': {
+      const code = store.cleanCode(f.code.value);
+      connectFromSheet(form, async () => {
+        if (code.length < 6) throw new Error('Escribe el código de 6 letras y números.');
+        await store.joinHousehold(code, store.userName());
+      });
+      break;
+    }
+    case 'rename-list': {
+      const listName = cap(f.name.value.trim());
+      if (listName) store.patchHome({ name: listName });
+      closeSheet();
+      break;
+    }
 
     case 'add-item':
       if (addItem(f.name.value)) { f.name.value = ''; renderSuggest(); }
@@ -869,14 +1000,15 @@ document.addEventListener('submit', (e) => {
 
 function startListening() {
   store.listen({
-    onHome: (h) => { home = h; render(); },
+    onHome: (h) => { home = h; store.noteListName(h.name); render(); },
     onItems: (list) => { items = list; if (home) render(); },
     onTrips: (list) => { trips = list; index = null; if (home) render(); },
     onGone: () => {
       // El hogar ya no existe o este móvil ya no pertenece a él.
       store.forget();
+      if (store.session()) { toast('Ya no formas parte de esa lista'); enterCurrent(); return; }
       home = null; items = []; trips = []; index = null;
-      welcome = { busy: false, error: 'Ya no formas parte de esa lista. Vuelve a entrar con el código.' };
+      welcome = { mode: null, busy: false, error: 'Ya no formas parte de esa lista. Vuelve a entrar con el código.' };
       render();
     },
   });

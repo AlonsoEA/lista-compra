@@ -1,6 +1,6 @@
 # Lista de la compra
 
-Web app para llevar la lista de la compra de casa entre toda la familia, desde el iPhone.
+Web app para llevar listas de la compra compartidas (con la familia, con amigos…) desde el iPhone.
 
 ## Qué hace
 
@@ -12,7 +12,12 @@ Web app para llevar la lista de la compra de casa entre toda la familia, desde e
 
 ## Cómo se comparte
 
-No hay cuentas ni contraseñas. El primero crea la lista y la app le da un **código de familia**; los demás escriben su nombre y ese código. El código se ve y se puede cambiar en *Ajustes*.
+No hay cuentas ni contraseñas. Al abrir la app escribes tu nombre y eliges:
+
+- **Crear una lista nueva**: le pones nombre (Casa, Amigos…) y la app te da un **código**.
+- **Unirme a una lista con un código**: escribes el código que te han pasado.
+
+Puedes estar en **varias listas** a la vez. Toca el nombre de la lista, arriba en la pestaña *Lista*, para cambiar de una a otra, crear otra o unirte a otra. Cada lista tiene sus propios productos, tickets, supermercados y código.
 
 ## Instalar en el iPhone
 
