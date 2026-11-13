@@ -175,7 +175,35 @@ function mount(screen, html) {
   return changed;
 }
 
+/* Pantalla siempre encendida mientras se está en la pestaña Compra con una compra en marcha.
+   El sistema suelta el bloqueo al salir de la app, así que se vuelve a pedir al regresar. */
+let wakeLock = null;
+let wakeBusy = false;
+async function syncWakeLock() {
+  if (!('wakeLock' in navigator) || wakeBusy) return;
+  const want = !!store.session() && !!home && tab === 'shop' && !!myTrip() && document.visibilityState === 'visible';
+  if (want === !!wakeLock) return;
+  wakeBusy = true;
+  try {
+    if (want) {
+      const lock = await navigator.wakeLock.request('screen');
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      wakeLock = lock;
+    } else {
+      const lock = wakeLock;
+      wakeLock = null;
+      await lock.release();
+    }
+    wakeBusy = false;
+    syncWakeLock(); // por si la situación cambió mientras se esperaba
+  } catch (e) {
+    wakeBusy = false; // sin permiso o batería baja: la app sigue funcionando igual
+  }
+}
+document.addEventListener('visibilitychange', syncWakeLock);
+
 function render() {
+  syncWakeLock();
   const s = store.session();
   const tabbar = $('#tabbar');
   const totalbar = $('#totalbar');

@@ -1,5 +1,5 @@
 // Sube este número cada vez que cambies la app para que el iPhone descargue la versión nueva.
-const CACHE = 'compra-v1';
+const CACHE = 'compra-v2';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'store.js', 'firebase-config.js', 'manifest.json', 'vendor/firebase.js', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
