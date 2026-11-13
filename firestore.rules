@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// Reglas de seguridad: pégalas en Firebase → Firestore Database → Reglas → Publicar.
+// Solo los miembros de un hogar pueden ver y cambiar su lista y sus tickets.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function homePath(hid) {
+      return /databases/$(database)/documents/households/$(hid);
+    }
+    function isMember(hid) {
+      return signedIn() && request.auth.uid in get(homePath(hid)).data.members;
+    }
+
+    // Códigos de invitación: se puede consultar uno concreto si lo conoces, pero no listarlos.
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['hid'])
+        && request.auth.uid in getAfter(homePath(request.resource.data.hid)).data.members;
+      allow delete: if isMember(resource.data.hid);
+    }
+
+    match /households/{hid} {
+      allow get: if signedIn() && request.auth.uid in resource.data.members;
+      allow create: if signedIn() && request.auth.uid in request.resource.data.members;
+      // Un miembro puede cambiar el hogar; quien llega con el código solo puede añadirse a sí mismo.
+      allow update: if signedIn() && (
+        request.auth.uid in resource.data.members
+        || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+          && request.resource.data.members.diff(resource.data.members).affectedKeys().hasOnly([request.auth.uid])
+        )
+      );
+
+      // Lista (items) y compras (trips).
+      match /{coleccion}/{docId} {
+        allow read, write: if isMember(hid);
+      }
+    }
+  }
+}
