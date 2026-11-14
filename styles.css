@@ -254,6 +254,10 @@ button.row:active { background: var(--surface-2); }
 .welcome form { text-align: left; margin-top: 26px; }
 .code-input { text-transform: uppercase; letter-spacing: .2em; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .code-input::placeholder { letter-spacing: .2em; font-weight: 500; opacity: .5; }
+.auth-top { padding-top: 3vh; text-align: left; margin-bottom: 18px; }
+.auth-top .logo { width: 64px; height: 64px; border-radius: 15px; }
+.account-line { margin-top: 34px; line-height: 1.9; }
+.version { margin-top: 26px; }
 .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 24px 0 16px; }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
 

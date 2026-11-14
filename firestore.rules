@@ -15,6 +15,11 @@ service cloud.firestore {
       return signedIn() && request.auth.uid in get(homePath(hid)).data.members;
     }
 
+    // Perfil de cada cuenta (su nombre y sus listas): solo lo ve y lo cambia su dueño.
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
     // Códigos de invitación: se puede consultar uno concreto si lo conoces, pero no listarlos.
     match /codes/{code} {
       allow get: if signedIn();

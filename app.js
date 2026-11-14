@@ -12,6 +12,10 @@ const DEFAULT_STORES = ['Carrefour', 'Lidl', 'Cash', 'Día', 'Mercadona'];
 const STORE_COLORS = { carrefour: '#1d5fd1', lidl: '#e0a800', cash: '#f97316', dia: '#e11d2e', mercadona: '#16a34a' };
 const PALETTE = ['#8b5cf6', '#0ea5e9', '#ec4899', '#14b8a6', '#a16207', '#64748b'];
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+// Versión de la app. Súbela junto con CACHE en sw.js cada vez que cambies algo:
+// es la que se ve al final de Ajustes y la que aparece en el manual.
+const APP_VERSION = 'v4';
+
 const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
 const $ = (sel) => document.querySelector(sel);
@@ -29,6 +33,7 @@ let tab = 'list';
 let sub = null;       // { ticket: id } cuando se está viendo un ticket
 let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let welcome = { mode: null, busy: false, error: '' };
+let authUi = { view: 'login', email: '' }; // pantalla de inicio de sesión o de crear cuenta
 let index = null;     // precios y nombres conocidos, calculado a partir de las compras
 
 /* ---------------- Números y fechas ---------------- */
@@ -182,7 +187,7 @@ let wakeLock = null;
 let wakeBusy = false;
 async function syncWakeLock() {
   if (!('wakeLock' in navigator) || wakeBusy) return;
-  const want = !!store.session() && !!home && tab === 'shop' && !!myTrip() && document.visibilityState === 'visible';
+  const want = !!store.user() && !!store.session() && !!home && tab === 'shop' && !!myTrip() && document.visibilityState === 'visible';
   if (want === !!wakeLock) return;
   wakeBusy = true;
   try {
@@ -208,6 +213,8 @@ function render() {
   const s = store.session();
   const tabbar = $('#tabbar');
   const totalbar = $('#totalbar');
+  const u = store.user();
+  if (!u || u.anonymous) { tabbar.hidden = true; totalbar.hidden = true; renderAuth(); return; }
   if (!s) { tabbar.hidden = true; totalbar.hidden = true; renderWelcome(); return; }
   if (!home) { tabbar.hidden = true; totalbar.hidden = true; mount('loading', `<p class="center muted loading">Cargando la lista…</p>${store.lists().length > 1 ? '<p class="center"><button class="link" data-act="lists">Cambiar de lista</button></p>' : ''}`); return; }
 
@@ -253,18 +260,19 @@ function enterCurrent() {
 function renderWelcome() {
   const prev = $('#welcome-form');
   const val = (n) => (prev && prev.elements[n] ? prev.elements[n].value : '');
-  const name = prev ? val('name') : store.userName();
+  const known = store.userName();
   const m = welcome.mode;
   const dis = welcome.busy ? 'disabled' : '';
   mount('welcome', `
     <div class="welcome">
       <img src="icons/icon-192.png" alt="" class="logo">
-      <h1>Lista de la compra</h1>
-      <p class="muted">Listas compartidas: cada uno apunta lo que hace falta desde su móvil.</p>
+      <h1>${known ? `Hola, ${esc(known)}` : 'Lista de la compra'}</h1>
+      <p class="muted">Todavía no estás en ninguna lista. Crea una o únete a la de tu familia o tus amigos con su código.</p>
       <form id="welcome-form" data-form="welcome" autocomplete="off">
+        ${known ? '' : `
         <label class="field"><span>Tu nombre</span>
-          <input name="name" class="input" maxlength="20" placeholder="Por ejemplo, Mamá" value="${esc(name)}">
-        </label>
+          <input name="name" class="input" maxlength="20" placeholder="Por ejemplo, Mamá" value="${esc(val('name'))}">
+        </label>`}
         ${!m ? `
           <button type="button" class="btn" data-act="welcome-mode" data-mode="create">Crear una lista nueva</button>
           <button type="button" class="btn secondary" data-act="welcome-mode" data-mode="join">Unirme a una lista con un código</button>` : ''}
@@ -282,19 +290,21 @@ function renderWelcome() {
         ${welcome.busy ? '<p class="center muted">Conectando…</p>' : ''}
         ${welcome.error ? `<p class="error">${esc(welcome.error)}</p>` : ''}
       </form>
+      <p class="muted small account-line">Sesión iniciada como ${esc(store.user().email)}<br><button class="link" data-act="logout-ask">Cerrar sesión</button></p>
     </div>`);
 }
 
 async function submitWelcome(form) {
   if (welcome.busy || !welcome.mode) return;
   const fail = (msg) => { welcome.error = msg; render(); };
-  const name = form.elements.name.value.trim();
+  const name = store.userName() || form.elements.name.value.trim();
   if (!name) return fail('Escribe tu nombre.');
   const mode = welcome.mode;
   const listName = mode === 'create' ? cap(form.elements.list.value.trim()) : '';
   const code = mode === 'join' ? store.cleanCode(form.elements.code.value) : '';
   if (mode === 'create' && !listName) return fail('Escribe un nombre para la lista.');
   if (mode === 'join' && code.length < 6) return fail('Escribe el código de 6 letras y números.');
+  if (!store.userName()) store.rename(name);
   welcome = { mode, busy: true, error: '' };
   render();
   try {
@@ -307,6 +317,106 @@ async function submitWelcome(form) {
     welcome = { mode, busy: false, error: connectError(e) };
     render();
   }
+}
+
+/* ----- Cuenta: iniciar sesión y crear cuenta ----- */
+
+function renderAuth() {
+  const key = 'auth-' + authUi.view;
+  if ($('#view').dataset.screen === key && $('#auth-form')) return; // no borrar lo que se está escribiendo
+  const email = esc(authUi.email || '');
+  const u = store.user();
+  const legacy = u && u.anonymous && store.lists().length
+    ? '<div class="banner"><span></span><span>La app ahora funciona con cuenta. <b>Crea tu cuenta</b> en este móvil y conservarás tus listas.</span></div>' : '';
+  if (authUi.view === 'signup') {
+    mount(key, `
+      <button class="back" data-act="auth-view" data-view="login">‹ Iniciar sesión</button>
+      <div class="header"><div class="eyebrow">Nueva cuenta</div><h1>Crear cuenta</h1></div>
+      <p class="muted">Con tu cuenta verás tus listas en cualquier dispositivo.</p>
+      ${legacy}
+      <form id="auth-form" data-form="auth" data-mode="up" novalidate>
+        <label class="field"><span>Tu nombre</span>
+          <input name="name" class="input" maxlength="20" placeholder="Así te verán los demás" value="${esc(store.userName())}" autocomplete="given-name">
+        </label>
+        <label class="field"><span>Correo electrónico</span>
+          <input name="email" type="email" class="input" value="${email}" placeholder="tucorreo@gmail.com" autocomplete="email" autocapitalize="off" spellcheck="false">
+        </label>
+        <label class="field"><span>Contraseña</span>
+          <input name="password" type="password" class="input" placeholder="Mínimo 6 caracteres" autocomplete="new-password">
+        </label>
+        <label class="field"><span>Repetir contraseña</span>
+          <input name="password2" type="password" class="input" placeholder="Vuelve a escribirla" autocomplete="new-password">
+        </label>
+        <p class="error" id="auth-error" hidden></p>
+        <button class="btn">Crear cuenta</button>
+      </form>`);
+    return;
+  }
+  mount(key, `
+    <div class="welcome auth-top">
+      <img src="icons/icon-192.png" alt="" class="logo">
+    </div>
+    <div class="header"><div class="eyebrow">Lista de la compra</div><h1>Iniciar sesión</h1></div>
+    <p class="muted">Entra en tu cuenta para ver tus listas en cualquier dispositivo.</p>
+    ${legacy}
+    <form id="auth-form" data-form="auth" data-mode="in" novalidate>
+      <label class="field"><span>Correo electrónico</span>
+        <input name="email" type="email" class="input" value="${email}" placeholder="tucorreo@gmail.com" autocomplete="email" autocapitalize="off" spellcheck="false">
+      </label>
+      <label class="field"><span>Contraseña</span>
+        <input name="password" type="password" class="input" placeholder="Tu contraseña" autocomplete="current-password">
+      </label>
+      <p class="error" id="auth-error" hidden></p>
+      <button class="btn">Entrar</button>
+      <p class="center"><button type="button" class="link" data-act="reset-pw">¿Has olvidado la contraseña?</button></p>
+    </form>
+    <div class="or"><span>¿No tienes cuenta?</span></div>
+    <button class="btn secondary" data-act="auth-view" data-view="signup">Crear cuenta</button>`);
+}
+
+function authError(msg) {
+  const el = $('#auth-error');
+  if (!el) { if (msg) toast(msg); return; }
+  el.textContent = msg;
+  el.hidden = !msg;
+}
+
+async function doAuth(form) {
+  const mode = form.dataset.mode;
+  const email = form.elements.email.value.trim();
+  const pw = form.elements.password.value;
+  authUi.email = email;
+  if (mode === 'up' && !form.elements.name.value.trim()) return authError('Escribe tu nombre.');
+  if (!email) return authError('Escribe tu correo electrónico.');
+  if (!pw) return authError('Escribe tu contraseña.');
+  if (mode === 'up') {
+    if (pw.length < 6) return authError('La contraseña debe tener al menos 6 caracteres.');
+    if (pw !== form.elements.password2.value) return authError('Las contraseñas no coinciden.');
+  }
+  authError('');
+  const buttons = form.querySelectorAll('button');
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    if (mode === 'up') await store.signUp(form.elements.name.value.trim(), email, pw);
+    else await store.signIn(email, pw);
+    authUi = { view: 'login', email: '' };
+    welcome = { mode: null, busy: false, error: '' };
+    enterCurrent();
+  } catch (e) {
+    console.error(e);
+    authError(store.authErrorText(e, mode));
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+async function logout() {
+  closeSheet();
+  try { await store.signOut(); } catch (e) { console.error(e); }
+  home = null; items = []; trips = []; index = null; sub = null; tab = 'list';
+  authUi = { view: 'login', email: '' };
+  welcome = { mode: null, busy: false, error: '' };
+  render();
+  window.scrollTo(0, 0);
 }
 
 /* ----- Varias listas ----- */
@@ -688,10 +798,15 @@ function renderSettings() {
     </div>
     <button class="btn ghost" data-act="add-store-ask">+ Añadir supermercado</button>
 
-    <h2 class="sub">Más</h2>
+    <h2 class="sub">Más opciones de esta lista</h2>
     <button class="btn secondary" data-act="change-code-ask">Cambiar el código</button>
     <button class="btn danger" data-act="leave-ask">Salir de esta lista</button>
-    <p class="muted small center">Para instalarla en el iPhone: abre esta página en Safari, toca Compartir y «Añadir a pantalla de inicio».</p>`);
+
+    <h2 class="sub">Cuenta</h2>
+    <div class="rows"><div class="row"><span class="grow"><b>${esc(store.user().email)}</b><small class="muted">Sesión iniciada · tus listas se guardan en tu cuenta</small></span></div></div>
+    <button class="btn secondary" data-act="logout-ask">Cerrar sesión</button>
+
+    <p class="muted small center version">Lista de la compra · versión ${APP_VERSION}</p>`);
 }
 
 async function shareCode() {
@@ -726,7 +841,8 @@ document.addEventListener('click', (e) => {
       welcome = { mode: d.mode || null, busy: false, error: '' };
       render();
       const form = $('#welcome-form');
-      const next = !form.elements.name.value.trim() ? form.elements.name : (form.elements.list || form.elements.code);
+      const nameEl = form.elements.name;
+      const next = nameEl && !nameEl.value.trim() ? nameEl : (form.elements.list || form.elements.code);
       if (next && welcome.mode) next.focus();
       break;
     }
@@ -871,6 +987,25 @@ document.addEventListener('click', (e) => {
     case 'leave-ask':
       confirmSheet({ title: '¿Salir de esta lista?', text: `Dejarás de ver «${home.name}» en este móvil. Podrás volver a entrar con el código.`, label: 'Salir', act: 'leave', danger: true });
       break;
+    case 'auth-view': {
+      const input = $('#auth-form [name=email]');
+      authUi = { view: d.view, email: input ? input.value.trim() : authUi.email };
+      render();
+      window.scrollTo(0, 0);
+      break;
+    }
+    case 'reset-pw': {
+      const email = $('#auth-form [name=email]').value.trim();
+      if (!email) { authError('Escribe tu correo arriba y vuelve a pulsar aquí.'); break; }
+      store.resetPassword(email)
+        .then(() => { authError(''); toast('Te hemos enviado un correo para cambiar la contraseña'); })
+        .catch((e) => authError(store.authErrorText(e)));
+      break;
+    }
+    case 'logout-ask':
+      confirmSheet({ title: '¿Cerrar sesión?', text: 'Tus listas siguen guardadas en tu cuenta. Las verás al volver a iniciar sesión.', label: 'Cerrar sesión', act: 'logout' });
+      break;
+    case 'logout': logout(); break;
     case 'leave':
       closeSheet();
       store.leaveHousehold().then(() => { toast('Has salido de la lista'); enterCurrent(); });
@@ -904,6 +1039,7 @@ document.addEventListener('submit', (e) => {
   const f = form.elements;
   switch (form.dataset.form) {
     case 'welcome': submitWelcome(form); break;
+    case 'auth': doAuth(form); break;
 
     case 'new-list': {
       const listName = cap(f.name.value.trim());
@@ -1017,7 +1153,13 @@ function startListening() {
 async function boot() {
   try { await store.init(); }
   catch (e) { console.error(e); }
-  if (store.session()) startListening();
+  const u = store.user();
+  if (u && !u.anonymous) {
+    // Con listas ya guardadas en el móvil se entra al momento y la cuenta se consulta en segundo plano.
+    if (!store.session()) await store.loadProfile();
+    else store.loadProfile().then((changed) => { if (changed) enterCurrent(); });
+    if (store.session()) startListening();
+  }
   render();
 }
 
