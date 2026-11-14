@@ -187,7 +187,18 @@ export async function signUp(name, email, pw) {
     s = emptySession();
   } else if (auth.currentUser && auth.currentUser.isAnonymous) {
     // Este dispositivo se usaba sin cuenta: la cuenta nueva conserva sus listas.
-    const cred = await fb.linkWithCredential(auth.currentUser, fb.EmailAuthProvider.credential(email, pw));
+    let cred;
+    try {
+      cred = await fb.linkWithCredential(auth.currentUser, fb.EmailAuthProvider.credential(email, pw));
+    } catch (e) {
+      const keep = ['auth/email-already-in-use', 'auth/credential-already-in-use', 'auth/invalid-email', 'auth/weak-password', 'auth/network-request-failed', 'auth/too-many-requests'];
+      if (keep.includes(e.code)) throw e;
+      // El acceso sin cuenta ya no está permitido: se crea una cuenta nueva desde cero.
+      console.error(e);
+      await fb.signOut(auth).catch(() => {});
+      cred = await fb.createUserWithEmailAndPassword(auth, email, pw);
+      s = emptySession();
+    }
     setUser(cred.user);
     me.email = email;
     me.anonymous = false;

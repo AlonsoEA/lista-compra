@@ -14,7 +14,7 @@ const PALETTE = ['#8b5cf6', '#0ea5e9', '#ec4899', '#14b8a6', '#a16207', '#64748b
 const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 // Versión de la app. Súbela junto con CACHE en sw.js cada vez que cambies algo:
 // es la que se ve al final de Ajustes y la que aparece en el manual.
-const APP_VERSION = 'v4';
+const APP_VERSION = 'v5';
 
 const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
